@@ -12,7 +12,7 @@ def test_home():
     response = client.get("/")
 
     assert response.status_code == 200
-    assert response.get_json()["message"] == "AutoDeploy is running 🚀"
+    assert response.get_json()["message"] == "AutoDeploy is running!! 🚀"
 
 
 def test_health():
