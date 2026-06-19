@@ -6,7 +6,7 @@ main = Blueprint("main", __name__)
 @main.route("/")
 def home():
     return jsonify({
-        "message": "AutoDeploy is running 🚀"
+        "message": "AutoDeploy is running!! 🚀"
     })
 
 @main.route("/health")
