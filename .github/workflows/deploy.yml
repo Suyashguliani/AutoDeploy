@@ -5,12 +5,9 @@ on:
     branches:
       - main
 
-# ----------------------------
-# GLOBAL ENV (NO HARDCODING IN STEPS)
-# ----------------------------
 env:
   AWS_REGION: ap-south-1
-  ALB_URL: http://autodeploy-alb-1495594165.ap-south-1.elb.amazonaws.com
+  ALB_URL: ${{ vars.ALB_URL }}
 
 jobs:
   ci:
@@ -19,7 +16,7 @@ jobs:
 
     steps:
       # ----------------------------
-      # CHECKOUT CODE
+      # CHECKOUT
       # ----------------------------
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,6 +36,31 @@ jobs:
         run: |
           pip install -r app/requirements.txt
           pip install pytest requests
+
+      # ----------------------------
+      # START FLASK APP (FIXED - OPTION 2)
+      # ----------------------------
+      - name: Start Flask App (background)
+        run: |
+          nohup python app/app.py > app.log 2>&1 &
+          echo "Waiting for Flask to start..."
+
+      # ----------------------------
+      # WAIT FOR HEALTH CHECK
+      # ----------------------------
+      - name: Wait for Flask Health Check
+        run: |
+          for i in {1..10}; do
+            echo "Attempt $i..."
+            if curl -f http://localhost:5000/health; then
+              echo "Flask is up!"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Flask failed to start"
+          cat app.log
+          exit 1
 
       # ----------------------------
       # UNIT TESTS
@@ -100,25 +122,25 @@ jobs:
             --force-new-deployment
 
       # ----------------------------
-      # WAIT FOR DEPLOYMENT
+      # WAIT FOR ECS DEPLOYMENT
       # ----------------------------
-      - name: Wait for deployment
+      - name: Wait for ECS deployment
         run: sleep 30
 
       # ----------------------------
-      # SMOKE TEST (RETRY LOGIC)
+      # SMOKE TESTS (ALB)
       # ----------------------------
-      - name: Smoke Test - Health Check
+      - name: Smoke Test - Health Check (Retry)
         run: |
           for i in {1..10}; do
-            echo "Attempt $i: Checking health endpoint..."
+            echo "Attempt $i..."
             if curl -f $ALB_URL/health; then
-              echo "Health check passed"
+              echo "ALB Health OK"
               exit 0
             fi
             sleep 10
           done
-          echo "Health check failed after retries"
+          echo "Smoke test failed"
           exit 1
 
       - name: Smoke Test - Root Endpoint
