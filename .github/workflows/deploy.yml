@@ -6,17 +6,13 @@ on:
       - main
 
 jobs:
-  test:
-
+  ci:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
 
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -26,5 +22,15 @@ jobs:
           pip install pytest requests
 
       - name: Run Unit Tests
+        run: pytest tests/test_unit.py -v
+
+      - name: Start Flask App
         run: |
-          pytest tests/test_unit.py -v
+          python app/app.py &
+          sleep 5
+
+      - name: Run Integration Tests
+        run: pytest tests/test_integration.py -v
+
+      - name: Build Docker Image
+        run: docker build -t autodeploy:${{ github.sha }} .
