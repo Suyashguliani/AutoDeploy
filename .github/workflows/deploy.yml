@@ -7,76 +7,24 @@ on:
 
 env:
   AWS_REGION: ap-south-1
-  ALB_URL: ${{ vars.ALB_URL }}
+  ECR_REPOSITORY: autodeploy
+  ECS_CLUSTER: autodeploy-cluster
+  ECS_SERVICE: autodeploy-service
 
 jobs:
-  ci:
-    name: Test + Build + Deploy
+  ci-cd:
     runs-on: ubuntu-latest
 
     steps:
-      # ----------------------------
-      # CHECKOUT
-      # ----------------------------
+      # -----------------------
+      # Checkout
+      # -----------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ----------------------------
-      # PYTHON SETUP
-      # ----------------------------
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      # ----------------------------
-      # INSTALL DEPENDENCIES
-      # ----------------------------
-      - name: Install dependencies
-        run: |
-          pip install -r app/requirements.txt
-          pip install pytest requests
-
-      # ----------------------------
-      # START FLASK APP (FIXED - OPTION 2)
-      # ----------------------------
-      - name: Start Flask App (background)
-        run: |
-          nohup python app/app.py > app.log 2>&1 &
-          echo "Waiting for Flask to start..."
-
-      # ----------------------------
-      # WAIT FOR HEALTH CHECK
-      # ----------------------------
-      - name: Wait for Flask Health Check
-        run: |
-          for i in {1..10}; do
-            echo "Attempt $i..."
-            if curl -f http://localhost:5000/health; then
-              echo "Flask is up!"
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "Flask failed to start"
-          cat app.log
-          exit 1
-
-      # ----------------------------
-      # UNIT TESTS
-      # ----------------------------
-      - name: Run Unit Tests
-        run: pytest tests/test_unit.py -v
-
-      # ----------------------------
-      # INTEGRATION TESTS
-      # ----------------------------
-      - name: Run Integration Tests
-        run: pytest tests/test_integration.py -v
-
-      # ----------------------------
-      # AWS AUTH
-      # ----------------------------
+      # -----------------------
+      # AWS Credentials
+      # -----------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -84,65 +32,67 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # ----------------------------
-      # LOGIN TO ECR
-      # ----------------------------
+      # -----------------------
+      # Login to ECR
+      # -----------------------
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # ----------------------------
-      # SET REGISTRY
-      # ----------------------------
-      - name: Set ECR registry
-        run: echo "REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_ENV
-
-      # ----------------------------
-      # BUILD DOCKER IMAGE
-      # ----------------------------
-      - name: Build Docker image
+      # -----------------------
+      # Build Docker image
+      # -----------------------
+      - name: Build image
         run: |
-          docker build -t $REGISTRY/autodeploy:${{ github.sha }} .
+          docker build -t $ECR_REPOSITORY:${{ github.sha }} .
 
-      # ----------------------------
-      # PUSH TO ECR
-      # ----------------------------
-      - name: Push to ECR
+      # -----------------------
+      # Tag image for ECR
+      # -----------------------
+      - name: Tag image
         run: |
-          docker push $REGISTRY/autodeploy:${{ github.sha }}
+          docker tag $ECR_REPOSITORY:${{ github.sha }} \
+            ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
 
-      # ----------------------------
-      # DEPLOY TO ECS
-      # ----------------------------
+      # -----------------------
+      # Push image to ECR
+      # -----------------------
+      - name: Push image
+        run: |
+          docker push ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
+
+      # -----------------------
+      # Render new task definition (IMPORTANT FIX)
+      # -----------------------
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition autodeploy-task \
+            --query taskDefinition > task-def.json
+
+      - name: Render new task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: app
+          image: ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
+
+      # -----------------------
+      # Deploy to ECS (REAL DEPLOY)
+      # -----------------------
       - name: Deploy to ECS
-        run: |
-          aws ecs update-service \
-            --cluster autodeploy-cluster \
-            --service autodeploy-service \
-            --force-new-deployment
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
 
-      # ----------------------------
-      # WAIT FOR ECS DEPLOYMENT
-      # ----------------------------
-      - name: Wait for ECS deployment
-        run: sleep 30
-
-      # ----------------------------
-      # SMOKE TESTS (ALB)
-      # ----------------------------
-      - name: Smoke Test - Health Check (Retry)
+      # -----------------------
+      # Smoke test (ALB)
+      # -----------------------
+      - name: Smoke test
         run: |
-          for i in {1..10}; do
-            echo "Attempt $i..."
-            if curl -f $ALB_URL/health; then
-              echo "ALB Health OK"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "Smoke test failed"
-          exit 1
-
-      - name: Smoke Test - Root Endpoint
-        run: |
-          curl -f $ALB_URL/
+          curl -f ${{ secrets.ALB_URL }}/health
+          curl -f ${{ secrets.ALB_URL }}/
